@@ -2113,8 +2113,8 @@ function _showRoomFinal(){
     </div>
   </div>
 
-  <!-- زر دخول الحكم -->
-  <div class="judge-toggle-row">
+  <!-- زر دخول الحكم - مخفي افتراضياً ويظهر فقط للحكم -->
+  <div class="judge-toggle-row" id="room-judge-toggle-row" style="display:none">
     <button class="jbtn-toggle-judge" id="room-judge-toggle-btn" onclick="toggleRoomJudgePanel()">
       🔐 دخول الحكم
     </button>
@@ -4401,16 +4401,20 @@ function _renderWaitPlayers(players){
 /* ── الحكم يبدأ المسابقة ── */
 async function roomStartFromJudge(){
   if(!window.FB || !window._roomQuestions) return;
+  window._isJudge = true;
   TC.qIndex = 0;
   await FB.sendQ(0);
   showScreen('room-play-screen');
-  // الحكم يرى لوحة التحكم مباشرة بدون PIN
   _roomJudgeUnlocked = true;
   document.getElementById('room-judge-panel').style.display = '';
   document.getElementById('room-judge-toggle-btn').style.display = 'none';
-  // أخفِ بطاقة اللاعب للحكم
+  // أظهر صف زر الحكم للحكم فقط
+  const tr = document.getElementById('room-judge-toggle-row');
+  if(tr) tr.style.display = '';
   const pc = document.getElementById('room-player-card');
   if(pc) pc.style.display = 'none';
+  const br = document.getElementById('room-bells-row');
+  if(br) br.style.display = 'none';
 }
 
 /* ── الفريق ينضم للقاعة ── */
@@ -4442,9 +4446,14 @@ async function joinRoomAction(){
 
     FB.listen(code);
     showScreen('room-play-screen');
-    // إخفاء لوحة الحكم وزر الدخول عن المتسابق
+    window._isJudge = false;
     document.getElementById('room-judge-panel').style.display='none';
     document.getElementById('room-judge-toggle-btn').style.display='none';
+    // إخفاء الجرس في وضع النظري
+    if(TC.settings && TC.settings.mode === 'written'){
+      const br = document.getElementById('room-bells-row');
+      if(br) br.style.display = 'none';
+    }
   }catch(e){
     err.textContent = '⚠️ ' + e.message;
   }
@@ -4884,24 +4893,27 @@ function selectRoomMode(mode){
 /* ── تطبيق الوضع على الشاشة ── */
 function applyRoomMode(mode){
   const bellsRow   = document.getElementById('room-bells-row');
-  const bellMsg    = document.getElementById('room-bell-msg');
   const answersDiv = document.getElementById('room-answers');
   const modeBadge  = document.getElementById('room-mode-badge');
   const judgeToggle= document.getElementById('room-judge-toggle-btn');
+  const judgePanel = document.getElementById('room-judge-panel');
+  const isJudge    = window._isJudge === true;
 
-  if(mode === 'written'){
-    if(bellsRow){ bellsRow.style.display = 'none'; }
-    if(bellMsg) bellMsg.classList.remove('show');
-    if(modeBadge) modeBadge.textContent = '📱 نظري';
-  } else {
-    if(answersDiv) answersDiv.style.display = 'none';
-    if(bellsRow)   bellsRow.style.display   = '';
-    if(modeBadge)  modeBadge.textContent    = '📢 شفهي';
+  // زر دخول الحكم — للمتسابق فقط وليس للحكم
+  if(judgeToggle){
+    judgeToggle.style.display = (!isJudge && !_roomJudgeUnlocked) ? '' : 'none';
   }
 
-  // إخفاء زر دخول الحكم عن المتسابقين
-  const isJudge = window.FB && window.FB.getRole()==='judge';
-  if(judgeToggle) judgeToggle.style.display = isJudge ? '' : 'none';
+  if(mode === 'written'){
+    // النظري: أخفِ الجرس دائماً
+    if(bellsRow) bellsRow.style.display = 'none';
+    if(modeBadge) modeBadge.textContent = '📱 نظري';
+  } else {
+    // الشفهي: أخفِ الإجابات، وأظهر الجرس للمتسابق فقط
+    if(answersDiv) answersDiv.style.display = 'none';
+    if(bellsRow)   bellsRow.style.display   = isJudge ? 'none' : '';
+    if(modeBadge)  modeBadge.textContent    = '📢 شفهي';
+  }
 }
 
 /* ── عرض الإجابات في الوضع النظري ── */
@@ -4949,19 +4961,20 @@ async function submitRoomAnswer(choiceIndex, q, btn){
       feedback.style.cssText = 'display:block;background:rgba(46,201,126,.15);color:var(--green);padding:10px;border-radius:12px;font-size:1rem;font-weight:900;text-align:center;margin-bottom:10px';
     }
     playSound('correct');
-    // تحديث النقاط محلياً
+    // تحديث النقاط في بطاقة اللاعب مباشرة
     const myPts = document.getElementById('room-my-pts');
     const curPts = parseInt(myPts?.textContent||'0');
-    const newPts = curPts + (TC.settings.ptsCorrect||10);
-    if(myPts) myPts.textContent = newPts;
+    const addPts = TC.settings?.ptsCorrect || 10;
+    if(myPts) myPts.textContent = curPts + addPts;
     // رفع النقاط لـ Firebase
-    if(window.FB && window._myTeamKey){
-      const teamKey = window._myTeamKey;
-      if(TC.teams[teamKey]){
-        TC.teams[teamKey].pts = (TC.teams[teamKey].pts||0) + (TC.settings.ptsCorrect||10);
-        TC.teams[teamKey].correct = (TC.teams[teamKey].correct||0) + 1;
-        window.FB.manualPts && window.FB.manualPts(teamKey, 1);
-      }
+    if(window.FB && window.FB._ready && window._myTeamKey && window._fbDb && window._roomCode){
+      const tk = window._myTeamKey;
+      const curT = TC.teams[tk] || {pts:0,correct:0,wrong:0};
+      curT.pts     = (curT.pts||0) + addPts;
+      curT.correct = (curT.correct||0) + 1;
+      TC.teams[tk] = curT;
+      window._fbDb.ref(`rooms/${window._roomCode}/teams/${tk}`)
+        .update({pts:curT.pts, correct:curT.correct, wrong:curT.wrong||0});
     }
   } else {
     btn.classList.add('wrong');
